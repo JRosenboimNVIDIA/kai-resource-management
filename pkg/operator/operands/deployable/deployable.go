@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	krmv1alpha1 "github.com/kai-scheduler/kai-resource-management-api/kai/v1alpha1"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
@@ -267,6 +268,7 @@ func createObjectForKRMConfig(
 
 	objectToCreate := obj.DeepCopyObject().(client.Object)
 	objectToCreate.SetResourceVersion("")
+	clearAllocatedFields(objectToCreate)
 
 	err := runtimeClient.Create(ctx, objectToCreate)
 	if err == nil {
@@ -294,6 +296,19 @@ func createObjectForKRMConfig(
 	logger.Info("Took ownership on obj",
 		"GroupVersionKind", obj.GetObjectKind().GroupVersionKind(), "Name", obj.GetName())
 	return nil
+}
+
+// clearAllocatedFields drops what the API server allocates on create. A desired
+// object built from a live one it does not own yet carries that object's cluster
+// IPs, and the API server allocates a requested IP before it detects the name
+// conflict: the create fails as Invalid ("provided IP is already allocated")
+// rather than AlreadyExists, so the takeover update never runs. The update keeps
+// the IPs, which are immutable.
+func clearAllocatedFields(obj client.Object) {
+	if service, ok := obj.(*corev1.Service); ok {
+		service.Spec.ClusterIP = ""
+		service.Spec.ClusterIPs = nil
+	}
 }
 
 func updateObjectsInCluster(

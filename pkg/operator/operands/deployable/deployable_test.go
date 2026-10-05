@@ -255,6 +255,57 @@ var _ = Describe("DeployableOperands", func() {
 			Expect(updatedWith).ToNot(BeEmpty())
 		})
 
+		It("takes ownership of a Service whose cluster IP is already allocated", func() {
+			const clusterIP = "10.96.0.42"
+			var createdWith []string
+			var updated *corev1.Service
+			runtimeClient = newClientBuilder(scheme).
+				WithObjects(&corev1.Service{
+					ObjectMeta: metav1.ObjectMeta{Name: "webhook", Namespace: testNamespace},
+					Spec: corev1.ServiceSpec{
+						ClusterIP:  clusterIP,
+						ClusterIPs: []string{clusterIP},
+						Ports:      []corev1.ServicePort{{Port: 443}},
+					},
+				}).
+				WithInterceptorFuncs(interceptor.Funcs{
+					// The API server allocates a requested IP before it detects the
+					// name conflict, so asking for the live object's IP is Invalid.
+					Create: func(
+						ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption,
+					) error {
+						service := obj.(*corev1.Service)
+						createdWith = service.Spec.ClusterIPs
+						if service.Spec.ClusterIP != "" {
+							return apierrors.NewInvalid(schema.GroupKind{Kind: "Service"}, obj.GetName(), nil)
+						}
+						return c.Create(ctx, obj, opts...)
+					},
+					Update: func(
+						ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.UpdateOption,
+					) error {
+						updated = obj.(*corev1.Service).DeepCopy()
+						return c.Update(ctx, obj, opts...)
+					},
+				}).
+				Build()
+			desired, err := common.ServiceForKRMConfig(ctx, runtimeClient, krmConfig, "webhook",
+				[]corev1.ServicePort{{Name: "webhook", Port: 443}})
+			Expect(err).ToNot(HaveOccurred())
+			desired.Annotations = map[string]string{"service.beta.openshift.io/serving-cert-secret-name": "webhook-tls"}
+			operand.extra = []client.Object{desired}
+
+			Expect(deploy()).To(Succeed())
+
+			Expect(createdWith).To(BeEmpty())
+			Expect(updated).ToNot(BeNil())
+			Expect(updated.Spec.ClusterIPs).To(Equal([]string{clusterIP}))
+			Expect(updated.Annotations).To(HaveKeyWithValue(
+				"service.beta.openshift.io/serving-cert-secret-name", "webhook-tls"))
+			Expect(updated.OwnerReferences).To(HaveLen(1))
+			Expect(updated.OwnerReferences[0].Kind).To(Equal(krmv1alpha1.KRMConfigKind))
+		})
+
 	})
 
 	Context("failing to create", func() {

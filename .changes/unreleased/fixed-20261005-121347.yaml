@@ -1,0 +1,3 @@
+kind: Fixed
+body: |-
+  The operator takes ownership of an existing Service instead of failing to create it because its cluster IP is already allocated
